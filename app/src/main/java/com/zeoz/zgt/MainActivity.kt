@@ -149,6 +149,15 @@ class MainActivity : AppCompatActivity() {
             topMargin = dp(16)
         })
 
+        column.addView(TextView(this).apply {
+            text = "ZGT · v${BuildConfig.VERSION_NAME}"
+            setTextColor(Color.rgb(90, 90, 90))
+            textSize = 12f
+            gravity = Gravity.CENTER
+        }, LinearLayout.LayoutParams(-1, -2).apply {
+            topMargin = dp(22)
+        })
+
         val scroll = ScrollView(this).apply {
             isFillViewport = true
             addView(column, FrameLayout.LayoutParams(-1, -2))
