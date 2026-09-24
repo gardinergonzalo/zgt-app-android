@@ -150,7 +150,7 @@ class MainActivity : AppCompatActivity() {
         })
 
         column.addView(TextView(this).apply {
-            text = "ZGT · v${BuildConfig.VERSION_NAME}"
+            text = "ZGT · v${packageManager.getPackageInfo(packageName, 0).versionName}"
             setTextColor(Color.rgb(90, 90, 90))
             textSize = 12f
             gravity = Gravity.CENTER
