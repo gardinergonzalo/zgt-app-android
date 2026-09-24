@@ -5,7 +5,7 @@ plugins {
 android {
     namespace = "com.zeoz.zgt"
     compileSdk = 35
-    defaultConfig {
+    compileOptions {\n        sourceCompatibility = JavaVersion.VERSION_17\n        targetCompatibility = JavaVersion.VERSION_17\n    }\n    kotlinOptions {\n        jvmTarget = "17"\n    }\n    defaultConfig {
         applicationId = "com.zeoz.zgt"
         minSdk = 26
         targetSdk = 35
