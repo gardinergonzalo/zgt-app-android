@@ -151,7 +151,7 @@ class MainActivity : AppCompatActivity() {
 
         val scroll = ScrollView(this).apply {
             isFillViewport = true
-            addView(column, ScrollView.LayoutParams(-1, -2))
+            addView(column, FrameLayout.LayoutParams(-1, -2))
         }
         root.addView(scroll, FrameLayout.LayoutParams(-1, -1))
 
