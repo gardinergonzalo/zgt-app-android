@@ -3,10 +3,13 @@ package com.zeoz.zgt
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
 import android.view.inputmethod.InputMethodManager
+import android.text.InputFilter
+import android.text.InputType
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
@@ -89,6 +92,8 @@ class MainActivity : AppCompatActivity() {
             setHintTextColor(Color.rgb(110,110,110)); setTextColor(Color.WHITE)
             textSize = 18f; gravity = Gravity.CENTER
             setSingleLine(true); setPadding(dp(14), dp(13), dp(14), dp(13))
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
+            filters = arrayOf(InputFilter.AllCaps())
             backgroundTintList = android.content.res.ColorStateList.valueOf(Color.rgb(90,90,90))
         }
         column.addView(code, LinearLayout.LayoutParams(-1, -2))
@@ -102,7 +107,11 @@ class MainActivity : AppCompatActivity() {
         val button = Button(this).apply {
             text = "Vincular"
             setTextColor(Color.BLACK)
-            backgroundTintList = android.content.res.ColorStateList.valueOf(Color.rgb(234,255,0))
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                setColor(Color.rgb(234,255,0))
+                cornerRadius = dp(26).toFloat()
+            }
         }
         column.addView(button, LinearLayout.LayoutParams(-1, dp(52)).apply { topMargin = dp(14) })
 
@@ -194,7 +203,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
         root.addView(w, FrameLayout.LayoutParams(-1, -1))
-        w.loadUrl(siteUrl)
+        w.loadUrl("${siteUrl.trimEnd('/')}/wp-login.php")
     }
 
     private fun confirmUnlink() {
