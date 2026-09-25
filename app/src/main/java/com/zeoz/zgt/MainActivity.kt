@@ -8,6 +8,8 @@ import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.text.InputFilter
 import android.text.InputType
+import android.text.TextWatcher
+import android.text.Editable
 import android.view.Gravity
 import android.view.inputmethod.InputMethodManager
 import android.webkit.CookieManager
@@ -80,8 +82,8 @@ class MainActivity : AppCompatActivity() {
 
         val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(dp(28), dp(44), dp(28), dp(36))
+            gravity = Gravity.CENTER
+            setPadding(dp(28), dp(36), dp(28), dp(36))
         }
 
         val logo = ImageView(this).apply {
@@ -120,12 +122,43 @@ class MainActivity : AppCompatActivity() {
             setSingleLine(true)
             setPadding(dp(18), 0, dp(18), 0)
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
-            filters = arrayOf(InputFilter.AllCaps())
+            filters = arrayOf(InputFilter.AllCaps(), InputFilter.LengthFilter(13))
             typeface = Typeface.MONOSPACE
             letterSpacing = 0.08f
             background = roundedDrawable(zgtSurface, 18, zgtBorder, 1)
         }
         column.addView(code, LinearLayout.LayoutParams(-1, dp(60)))
+
+        code.addTextChangedListener(object : TextWatcher {
+            private var editing = false
+
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+
+            override fun afterTextChanged(editable: Editable?) {
+                if (editing) return
+
+                val raw = editable?.toString()
+                    .orEmpty()
+                    .uppercase()
+                    .filter { it.isLetterOrDigit() }
+                    .take(11)
+
+                val formatted = buildString {
+                    raw.forEachIndexed { index, ch ->
+                        if (index == 3 || index == 7) append('-')
+                        append(ch)
+                    }
+                }
+
+                if (editable?.toString() != formatted) {
+                    editing = true
+                    code.setText(formatted)
+                    code.setSelection(formatted.length)
+                    editing = false
+                }
+            }
+        })
 
         val status = TextView(this).apply {
             setTextColor(zgtError)
@@ -160,7 +193,7 @@ class MainActivity : AppCompatActivity() {
 
         val scroll = ScrollView(this).apply {
             isFillViewport = true
-            addView(column, FrameLayout.LayoutParams(-1, -2))
+            addView(column, FrameLayout.LayoutParams(-1, -1))
         }
         root.addView(scroll, FrameLayout.LayoutParams(-1, -1))
 
@@ -273,12 +306,18 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onPageFinished(view: WebView, url: String) {
+                if (url.contains("/wp-login.php")) {
+                    view.evaluateJavascript(
+                        "(function(){var r=document.getElementById('rememberme');if(r){r.checked=true;r.setAttribute('checked','checked');}})();",
+                        null
+                    )
+                }
                 CookieManager.getInstance().flush()
             }
         }
 
         root.addView(w, FrameLayout.LayoutParams(-1, -1))
-        w.loadUrl("${siteUrl.trimEnd('/')}/wp-login.php")
+        w.loadUrl("${siteUrl.trimEnd('/')}/wp-admin/")
     }
 
     private fun confirmUnlink() {
