@@ -271,6 +271,10 @@ class MainActivity : AppCompatActivity() {
                     true
                 }
             }
+
+            override fun onPageFinished(view: WebView, url: String) {
+                CookieManager.getInstance().flush()
+            }
         }
 
         root.addView(w, FrameLayout.LayoutParams(-1, -1))
@@ -305,6 +309,11 @@ class MainActivity : AppCompatActivity() {
         if (strokeColor != null && strokeDp > 0) {
             setStroke(dp(strokeDp), strokeColor)
         }
+    }
+
+    override fun onPause() {
+        CookieManager.getInstance().flush()
+        super.onPause()
     }
 
     override fun onDestroy() {
