@@ -329,7 +329,7 @@ class MainActivity : AppCompatActivity() {
             databaseEnabled = true
             allowFileAccess = true
             mediaPlaybackRequiresUserGesture = false
-            userAgentString = "$userAgentString ZGT-Android/0.1"
+            userAgentString = "$userAgentString ZGT-Android/${BuildConfig.VERSION_NAME}"
         }
 
         w.addJavascriptInterface(ZGTNativeBridge(), "ZGTNative")
@@ -708,7 +708,10 @@ class MainActivity : AppCompatActivity() {
         manager.print(
             jobName,
             PdfFilePrintAdapter(file, file.name),
-            PrintAttributes.Builder().build()
+            PrintAttributes.Builder()
+                .setMediaSize(PrintAttributes.MediaSize.ISO_A4)
+                .setMinMargins(PrintAttributes.Margins.NO_MARGINS)
+                .build()
         )
     }
 
@@ -756,10 +759,32 @@ class MainActivity : AppCompatActivity() {
                         val manager = getSystemService(Context.PRINT_SERVICE) as PrintManager
                         val safeJobName = jobName.trim().ifBlank { "ZGT QR" }
 
+                        /*
+                         * El QR es una etiqueta física de 50 × 30 mm.
+                         * Android usa milésimas de pulgada (mils):
+                         * 50 mm = 1969 mils; 30 mm = 1181 mils.
+                         */
+                        val qrMediaSize = PrintAttributes.MediaSize(
+                            "ZGT_50X30",
+                            "Etiqueta 50 × 30 mm",
+                            1969,
+                            1181
+                        )
+
                         manager.print(
                             safeJobName,
                             view.createPrintDocumentAdapter(safeJobName),
                             PrintAttributes.Builder()
+                                .setMediaSize(qrMediaSize)
+                                .setMinMargins(PrintAttributes.Margins.NO_MARGINS)
+                                .setResolution(
+                                    PrintAttributes.Resolution(
+                                        "ZGT_300DPI",
+                                        "300 dpi",
+                                        300,
+                                        300
+                                    )
+                                )
                                 .setColorMode(PrintAttributes.COLOR_MODE_MONOCHROME)
                                 .build()
                         )
@@ -778,6 +803,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private inner class ZGTNativeBridge {
+        @JavascriptInterface
+        fun appVersion(): String = BuildConfig.VERSION_NAME
+
         @JavascriptInterface
         fun openPdf(url: String, filename: String) {
             downloadAuthenticatedPdf(url, filename) { result ->
