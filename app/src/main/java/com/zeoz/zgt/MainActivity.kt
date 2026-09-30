@@ -329,7 +329,7 @@ class MainActivity : AppCompatActivity() {
             databaseEnabled = true
             allowFileAccess = true
             mediaPlaybackRequiresUserGesture = false
-            userAgentString = "$userAgentString ZGT-Android/${BuildConfig.VERSION_NAME}"
+            userAgentString = "$userAgentString ZGT-Android/0.1.9"
         }
 
         w.addJavascriptInterface(ZGTNativeBridge(), "ZGTNative")
@@ -804,7 +804,7 @@ class MainActivity : AppCompatActivity() {
 
     private inner class ZGTNativeBridge {
         @JavascriptInterface
-        fun appVersion(): String = BuildConfig.VERSION_NAME
+        fun appVersion(): String = "0.1.9"
 
         @JavascriptInterface
         fun openPdf(url: String, filename: String) {
