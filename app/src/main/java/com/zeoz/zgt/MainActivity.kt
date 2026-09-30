@@ -667,7 +667,7 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(Color.BLACK)
             addView(
                 pages,
-                ScrollView.LayoutParams(-1, -2)
+                FrameLayout.LayoutParams(-1, -2)
             )
         }
 
