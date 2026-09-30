@@ -13,7 +13,9 @@ import android.print.PrintAttributes
 import android.print.PrintDocumentAdapter
 import android.print.PrintDocumentInfo
 import android.print.PrintManager
+import android.graphics.Bitmap
 import android.graphics.Color
+import android.graphics.pdf.PdfRenderer
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
@@ -50,6 +52,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var root: FrameLayout
     private var webView: WebView? = null
     private var nativePrintWebView: WebView? = null
+    private var nativePdfOverlay: LinearLayout? = null
     private var pendingCameraPermissionRequest: PermissionRequest? = null
 
     private val cameraPermissionLauncher =
@@ -89,6 +92,7 @@ class MainActivity : AppCompatActivity() {
             override fun handleOnBackPressed() {
                 val w = webView
                 when {
+                    nativePdfOverlay != null -> closeNativePdfViewer()
                     w != null && w.canGoBack() -> w.goBack()
                     w != null -> confirmUnlink()
                     else -> finish()
@@ -494,20 +498,190 @@ class MainActivity : AppCompatActivity() {
             file
         )
 
+    private fun closeNativePdfViewer() {
+        nativePdfOverlay?.let { overlay ->
+            try {
+                root.removeView(overlay)
+            } catch (_: Exception) {}
+        }
+        nativePdfOverlay = null
+    }
+
     private fun openPdfFile(file: File) {
-        try {
-            val intent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(fileUri(file), "application/pdf")
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        closeNativePdfViewer()
+
+        val overlay = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(zgtBackground)
+        }
+
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+            setBackgroundColor(zgtSurface)
+        }
+
+        val backButton = Button(this).apply {
+            text = "‹ Volver"
+            isAllCaps = false
+            setTextColor(zgtText)
+            textSize = 15f
+            background = roundedDrawable(zgtSurface, 10)
+            setOnClickListener { closeNativePdfViewer() }
+        }
+
+        val titleView = TextView(this).apply {
+            text = file.nameWithoutExtension.ifBlank { "Presupuesto" }
+            setTextColor(zgtText)
+            textSize = 16f
+            setTypeface(typeface, Typeface.BOLD)
+            gravity = Gravity.CENTER
+            maxLines = 1
+        }
+
+        val shareButton = Button(this).apply {
+            text = "Compartir"
+            isAllCaps = false
+            setTextColor(zgtText)
+            textSize = 13f
+            background = roundedDrawable(zgtSurface, 10)
+            setOnClickListener { sharePdfFile(file) }
+        }
+
+        val printButton = Button(this).apply {
+            text = "Imprimir"
+            isAllCaps = false
+            setTextColor(zgtText)
+            textSize = 13f
+            background = roundedDrawable(zgtSurface, 10)
+            setOnClickListener { printPdfFile(file) }
+        }
+
+        header.addView(
+            backButton,
+            LinearLayout.LayoutParams(dp(90), dp(46))
+        )
+        header.addView(
+            titleView,
+            LinearLayout.LayoutParams(0, dp(46), 1f)
+        )
+
+        val actions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END or Gravity.CENTER_VERTICAL
+        }
+        actions.addView(
+            shareButton,
+            LinearLayout.LayoutParams(dp(92), dp(46))
+        )
+        actions.addView(
+            printButton,
+            LinearLayout.LayoutParams(dp(84), dp(46)).apply {
+                leftMargin = dp(4)
             }
-            startActivity(intent)
+        )
+        header.addView(
+            actions,
+            LinearLayout.LayoutParams(-2, dp(46))
+        )
+
+        overlay.addView(
+            header,
+            LinearLayout.LayoutParams(-1, -2)
+        )
+
+        val pages = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(dp(12), dp(14), dp(12), dp(24))
+        }
+
+        try {
+            ParcelFileDescriptor.open(
+                file,
+                ParcelFileDescriptor.MODE_READ_ONLY
+            ).use { descriptor ->
+                PdfRenderer(descriptor).use { renderer ->
+                    val maxWidth =
+                        resources.displayMetrics.widthPixels - dp(24)
+
+                    for (index in 0 until renderer.pageCount) {
+                        renderer.openPage(index).use { page ->
+                            val scale =
+                                maxWidth.toFloat() / page.width.toFloat()
+
+                            val height =
+                                (page.height * scale)
+                                    .toInt()
+                                    .coerceAtLeast(1)
+
+                            val bitmap = Bitmap.createBitmap(
+                                maxWidth,
+                                height,
+                                Bitmap.Config.ARGB_8888
+                            )
+
+                            bitmap.eraseColor(Color.WHITE)
+
+                            page.render(
+                                bitmap,
+                                null,
+                                null,
+                                PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY
+                            )
+
+                            val image = ImageView(this).apply {
+                                setImageBitmap(bitmap)
+                                adjustViewBounds = true
+                                scaleType = ImageView.ScaleType.FIT_CENTER
+                                setBackgroundColor(Color.WHITE)
+                            }
+
+                            pages.addView(
+                                image,
+                                LinearLayout.LayoutParams(
+                                    -1,
+                                    -2
+                                ).apply {
+                                    if (index > 0) {
+                                        topMargin = dp(12)
+                                    }
+                                }
+                            )
+                        }
+                    }
+                }
+            }
         } catch (_: Exception) {
             Toast.makeText(
                 this,
-                "No hay un visor PDF disponible en el dispositivo.",
+                "No se pudo visualizar el PDF.",
                 Toast.LENGTH_LONG
             ).show()
+            return
         }
+
+        val scroll = ScrollView(this).apply {
+            isFillViewport = true
+            setBackgroundColor(Color.BLACK)
+            addView(
+                pages,
+                ScrollView.LayoutParams(-1, -2)
+            )
+        }
+
+        overlay.addView(
+            scroll,
+            LinearLayout.LayoutParams(-1, 0, 1f)
+        )
+
+        root.addView(
+            overlay,
+            FrameLayout.LayoutParams(-1, -1)
+        )
+
+        nativePdfOverlay = overlay
     }
 
     private fun sharePdfFile(file: File) {
@@ -753,6 +927,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        closeNativePdfViewer()
         nativePrintWebView?.destroy()
         webView?.destroy()
         super.onDestroy()
