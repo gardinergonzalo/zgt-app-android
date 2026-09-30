@@ -2,6 +2,15 @@ package com.zeoz.zgt
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.os.CancellationSignal
+import android.os.ParcelFileDescriptor
+import android.print.PageRange
+import android.print.PrintAttributes
+import android.print.PrintDocumentAdapter
+import android.print.PrintDocumentInfo
+import android.print.PrintManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -13,6 +22,7 @@ import android.text.Editable
 import android.view.Gravity
 import android.view.inputmethod.InputMethodManager
 import android.webkit.CookieManager
+import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
@@ -21,7 +31,11 @@ import android.widget.*
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.FileProvider
 import org.json.JSONObject
+import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import kotlin.concurrent.thread
@@ -30,6 +44,7 @@ class MainActivity : AppCompatActivity() {
     private val prefs by lazy { getSharedPreferences("zgt", MODE_PRIVATE) }
     private lateinit var root: FrameLayout
     private var webView: WebView? = null
+    private var nativePrintWebView: WebView? = null
     private val centralEndpoint = "https://zgt.zeoz.com.ar/wp-json/gtc/v1/app/resolve"
 
     private val zgtBackground = Color.rgb(20, 20, 20)
@@ -291,6 +306,7 @@ class MainActivity : AppCompatActivity() {
             userAgentString = "$userAgentString ZGT-Android/0.1"
         }
 
+        w.addJavascriptInterface(ZGTNativeBridge(), "ZGTNative")
         w.webChromeClient = WebChromeClient()
 
         val allowedHost = URL(siteUrl).host
@@ -318,6 +334,330 @@ class MainActivity : AppCompatActivity() {
 
         root.addView(w, FrameLayout.LayoutParams(-1, -1))
         w.loadUrl("${siteUrl.trimEnd('/')}/wp-admin/")
+    }
+
+
+    private fun isTrustedWorkshopUrl(value: String): Boolean {
+        val siteUrl = prefs.getString("site_url", null) ?: return false
+
+        return try {
+            val target = URL(value)
+            val allowed = URL(siteUrl)
+
+            target.protocol.equals("https", ignoreCase = true) &&
+                (
+                    target.host.equals(allowed.host, ignoreCase = true) ||
+                    target.host.endsWith(".\${allowed.host}", ignoreCase = true)
+                )
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun safePdfFilename(value: String): String {
+        val base = value
+            .trim()
+            .ifBlank { "documento.pdf" }
+            .replace(Regex("[^A-Za-z0-9._-]+"), "_")
+            .take(120)
+            .ifBlank { "documento.pdf" }
+
+        return if (base.lowercase().endsWith(".pdf")) base else "$base.pdf"
+    }
+
+    private fun downloadAuthenticatedPdf(
+        urlString: String,
+        filename: String,
+        done: (Result<File>) -> Unit
+    ) {
+        if (!isTrustedWorkshopUrl(urlString)) {
+            done(Result.failure(Exception("URL no permitida.")))
+            return
+        }
+
+        val cookie = CookieManager.getInstance().getCookie(urlString).orEmpty()
+        val userAgent = webView?.settings?.userAgentString.orEmpty()
+        val referer = webView?.url.orEmpty()
+
+        thread {
+            var connection: HttpURLConnection? = null
+
+            try {
+                val file = File(
+                    File(cacheDir, "shared").apply { mkdirs() },
+                    safePdfFilename(filename)
+                )
+
+                connection = (URL(urlString).openConnection() as HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    connectTimeout = 15000
+                    readTimeout = 30000
+                    instanceFollowRedirects = true
+                    if (cookie.isNotBlank()) setRequestProperty("Cookie", cookie)
+                    if (userAgent.isNotBlank()) setRequestProperty("User-Agent", userAgent)
+                    if (referer.isNotBlank()) setRequestProperty("Referer", referer)
+                }
+
+                val status = connection.responseCode
+                if (status !in 200..299) {
+                    throw Exception("HTTP $status")
+                }
+
+                connection.inputStream.use { input ->
+                    FileOutputStream(file).use { output ->
+                        input.copyTo(output)
+                    }
+                }
+
+                val signature = ByteArray(4)
+                FileInputStream(file).use { input ->
+                    if (input.read(signature) != 4) {
+                        throw Exception("PDF vacío.")
+                    }
+                }
+
+                if (String(signature, Charsets.US_ASCII) != "%PDF") {
+                    file.delete()
+                    throw Exception("La respuesta no es un PDF.")
+                }
+
+                done(Result.success(file))
+            } catch (error: Exception) {
+                done(Result.failure(error))
+            } finally {
+                connection?.disconnect()
+            }
+        }
+    }
+
+    private fun fileUri(file: File): Uri =
+        FileProvider.getUriForFile(
+            this,
+            "$packageName.fileprovider",
+            file
+        )
+
+    private fun openPdfFile(file: File) {
+        try {
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(fileUri(file), "application/pdf")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(intent)
+        } catch (_: Exception) {
+            Toast.makeText(
+                this,
+                "No hay un visor PDF disponible en el dispositivo.",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
+    private fun sharePdfFile(file: File) {
+        try {
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "application/pdf"
+                putExtra(Intent.EXTRA_STREAM, fileUri(file))
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(Intent.createChooser(intent, "Compartir PDF"))
+        } catch (_: Exception) {
+            Toast.makeText(
+                this,
+                "No se pudo abrir el menú para compartir.",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
+    private fun printPdfFile(file: File) {
+        val manager = getSystemService(Context.PRINT_SERVICE) as PrintManager
+        val jobName = file.nameWithoutExtension.ifBlank { "ZGT Presupuesto" }
+
+        manager.print(
+            jobName,
+            PdfFilePrintAdapter(file, file.name),
+            PrintAttributes.Builder().build()
+        )
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun printWebUrl(urlString: String, jobName: String) {
+        if (!isTrustedWorkshopUrl(urlString)) {
+            Toast.makeText(this, "URL de impresión no permitida.", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        nativePrintWebView?.let {
+            try {
+                root.removeView(it)
+            } catch (_: Exception) {}
+            it.destroy()
+        }
+
+        val printView = WebView(this)
+        nativePrintWebView = printView
+
+        CookieManager.getInstance().apply {
+            setAcceptCookie(true)
+            setAcceptThirdPartyCookies(printView, true)
+        }
+
+        printView.settings.apply {
+            javaScriptEnabled = true
+            domStorageEnabled = true
+            allowFileAccess = true
+            userAgentString = webView?.settings?.userAgentString ?: userAgentString
+        }
+
+        printView.alpha = 0f
+        root.addView(printView, FrameLayout.LayoutParams(1, 1))
+
+        printView.webViewClient = object : WebViewClient() {
+            private var printed = false
+
+            override fun onPageFinished(view: WebView, url: String) {
+                if (printed) return
+                printed = true
+
+                view.postDelayed({
+                    try {
+                        val manager = getSystemService(Context.PRINT_SERVICE) as PrintManager
+                        val safeJobName = jobName.trim().ifBlank { "ZGT QR" }
+
+                        manager.print(
+                            safeJobName,
+                            view.createPrintDocumentAdapter(safeJobName),
+                            PrintAttributes.Builder()
+                                .setColorMode(PrintAttributes.COLOR_MODE_MONOCHROME)
+                                .build()
+                        )
+                    } catch (_: Exception) {
+                        Toast.makeText(
+                            this@MainActivity,
+                            "No se pudo iniciar la impresión.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }, 800)
+            }
+        }
+
+        printView.loadUrl(urlString)
+    }
+
+    private inner class ZGTNativeBridge {
+        @JavascriptInterface
+        fun openPdf(url: String, filename: String) {
+            downloadAuthenticatedPdf(url, filename) { result ->
+                runOnUiThread {
+                    result.onSuccess(::openPdfFile)
+                        .onFailure {
+                            Toast.makeText(
+                                this@MainActivity,
+                                "No se pudo abrir el PDF.",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                }
+            }
+        }
+
+        @JavascriptInterface
+        fun sharePdf(url: String, filename: String) {
+            downloadAuthenticatedPdf(url, filename) { result ->
+                runOnUiThread {
+                    result.onSuccess(::sharePdfFile)
+                        .onFailure {
+                            Toast.makeText(
+                                this@MainActivity,
+                                "No se pudo compartir el PDF.",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                }
+            }
+        }
+
+        @JavascriptInterface
+        fun printPdf(url: String, filename: String) {
+            downloadAuthenticatedPdf(url, filename) { result ->
+                runOnUiThread {
+                    result.onSuccess(::printPdfFile)
+                        .onFailure {
+                            Toast.makeText(
+                                this@MainActivity,
+                                "No se pudo preparar el PDF para imprimir.",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                }
+            }
+        }
+
+        @JavascriptInterface
+        fun printUrl(url: String, jobName: String) {
+            runOnUiThread {
+                printWebUrl(url, jobName)
+            }
+        }
+    }
+
+    private class PdfFilePrintAdapter(
+        private val file: File,
+        private val documentName: String
+    ) : PrintDocumentAdapter() {
+
+        override fun onLayout(
+            oldAttributes: PrintAttributes?,
+            newAttributes: PrintAttributes?,
+            cancellationSignal: CancellationSignal?,
+            callback: LayoutResultCallback?,
+            extras: Bundle?
+        ) {
+            if (cancellationSignal?.isCanceled == true) {
+                callback?.onLayoutCancelled()
+                return
+            }
+
+            callback?.onLayoutFinished(
+                PrintDocumentInfo.Builder(documentName)
+                    .setContentType(PrintDocumentInfo.CONTENT_TYPE_DOCUMENT)
+                    .build(),
+                true
+            )
+        }
+
+        override fun onWrite(
+            pages: Array<out PageRange>?,
+            destination: ParcelFileDescriptor?,
+            cancellationSignal: CancellationSignal?,
+            callback: WriteResultCallback?
+        ) {
+            if (destination == null) {
+                callback?.onWriteFailed("Destino de impresión no disponible.")
+                return
+            }
+
+            thread {
+                try {
+                    if (cancellationSignal?.isCanceled == true) {
+                        callback?.onWriteCancelled()
+                        return@thread
+                    }
+
+                    FileInputStream(file).use { input ->
+                        FileOutputStream(destination.fileDescriptor).use { output ->
+                            input.copyTo(output)
+                        }
+                    }
+
+                    callback?.onWriteFinished(arrayOf(PageRange.ALL_PAGES))
+                } catch (error: Exception) {
+                    callback?.onWriteFailed(error.message)
+                }
+            }
+        }
     }
 
     private fun confirmUnlink() {
@@ -356,6 +696,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        nativePrintWebView?.destroy()
         webView?.destroy()
         super.onDestroy()
     }
