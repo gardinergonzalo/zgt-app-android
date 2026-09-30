@@ -1,6 +1,8 @@
 package com.zeoz.zgt
 
 import android.annotation.SuppressLint
+import android.Manifest
+import android.content.pm.PackageManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -23,15 +25,18 @@ import android.view.Gravity
 import android.view.inputmethod.InputMethodManager
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
+import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.*
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.FileProvider
+import androidx.core.content.ContextCompat
 import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
@@ -45,6 +50,23 @@ class MainActivity : AppCompatActivity() {
     private lateinit var root: FrameLayout
     private var webView: WebView? = null
     private var nativePrintWebView: WebView? = null
+    private var pendingCameraPermissionRequest: PermissionRequest? = null
+
+    private val cameraPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            val request = pendingCameraPermissionRequest
+            pendingCameraPermissionRequest = null
+
+            if (request == null) {
+                return@registerForActivityResult
+            }
+
+            if (granted) {
+                request.grant(arrayOf(PermissionRequest.RESOURCE_VIDEO_CAPTURE))
+            } else {
+                request.deny()
+            }
+        }
     private val centralEndpoint = "https://zgt.zeoz.com.ar/wp-json/gtc/v1/app/resolve"
 
     private val zgtBackground = Color.rgb(20, 20, 20)
@@ -307,7 +329,42 @@ class MainActivity : AppCompatActivity() {
         }
 
         w.addJavascriptInterface(ZGTNativeBridge(), "ZGTNative")
-        w.webChromeClient = WebChromeClient()
+        w.webChromeClient = object : WebChromeClient() {
+            override fun onPermissionRequest(request: PermissionRequest) {
+                runOnUiThread {
+                    val origin = request.origin?.toString().orEmpty()
+                    val wantsVideo = request.resources.contains(
+                        PermissionRequest.RESOURCE_VIDEO_CAPTURE
+                    )
+
+                    if (!wantsVideo || !isTrustedWorkshopUrl(origin)) {
+                        request.deny()
+                        return@runOnUiThread
+                    }
+
+                    if (
+                        ContextCompat.checkSelfPermission(
+                            this@MainActivity,
+                            Manifest.permission.CAMERA
+                        ) == PackageManager.PERMISSION_GRANTED
+                    ) {
+                        request.grant(
+                            arrayOf(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
+                        )
+                    } else {
+                        pendingCameraPermissionRequest?.deny()
+                        pendingCameraPermissionRequest = request
+                        cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                    }
+                }
+            }
+
+            override fun onPermissionRequestCanceled(request: PermissionRequest) {
+                if (pendingCameraPermissionRequest === request) {
+                    pendingCameraPermissionRequest = null
+                }
+            }
+        }
 
         val allowedHost = URL(siteUrl).host
         w.webViewClient = object : WebViewClient() {
@@ -347,7 +404,7 @@ class MainActivity : AppCompatActivity() {
             target.protocol.equals("https", ignoreCase = true) &&
                 (
                     target.host.equals(allowed.host, ignoreCase = true) ||
-                    target.host.endsWith(".\${allowed.host}", ignoreCase = true)
+                    target.host.endsWith(".${allowed.host}", ignoreCase = true)
                 )
         } catch (_: Exception) {
             false
