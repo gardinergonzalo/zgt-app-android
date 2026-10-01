@@ -1,7 +1,7 @@
 name: Build ZGT Android APK
 on:
   push:
-    branches: [ main, feat/native-b1pro-print ]
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
