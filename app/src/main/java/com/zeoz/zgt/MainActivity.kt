@@ -19,6 +19,7 @@ import android.graphics.pdf.PdfRenderer
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
+import android.os.Build
 import android.text.InputFilter
 import android.text.InputType
 import android.text.TextWatcher
@@ -54,6 +55,13 @@ class MainActivity : AppCompatActivity() {
     private var nativePrintWebView: WebView? = null
     private var nativePdfOverlay: LinearLayout? = null
     private var pendingCameraPermissionRequest: PermissionRequest? = null
+    private var pendingNiimbotDataUrl: String? = null
+
+    private val niimbotPrinter by lazy {
+        NiimbotB1ProPrinter(this) { type, message ->
+            sendNiimbotEvent(type, message)
+        }
+    }
 
     private val cameraPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -70,6 +78,33 @@ class MainActivity : AppCompatActivity() {
                 request.deny()
             }
         }
+
+    private val bluetoothPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+            val dataUrl = pendingNiimbotDataUrl
+            pendingNiimbotDataUrl = null
+
+            if (dataUrl == null) {
+                return@registerForActivityResult
+            }
+
+            val granted = requiredNiimbotPermissions().all { permission ->
+                ContextCompat.checkSelfPermission(
+                    this,
+                    permission
+                ) == PackageManager.PERMISSION_GRANTED
+            }
+
+            if (granted) {
+                niimbotPrinter.print(dataUrl)
+            } else {
+                sendNiimbotEvent(
+                    "error",
+                    "ZGT necesita permiso Bluetooth para conectar con la NIIMBOT B1 Pro."
+                )
+            }
+        }
+
     private val centralEndpoint = "https://zgt.zeoz.com.ar/wp-json/gtc/v1/app/resolve"
 
     private val zgtBackground = Color.rgb(20, 20, 20)
@@ -329,7 +364,7 @@ class MainActivity : AppCompatActivity() {
             databaseEnabled = true
             allowFileAccess = true
             mediaPlaybackRequiresUserGesture = false
-            userAgentString = "$userAgentString ZGT-Android/0.1.9"
+            userAgentString = "$userAgentString ZGT-Android/0.2.0"
         }
 
         w.addJavascriptInterface(ZGTNativeBridge(), "ZGTNative")
@@ -802,9 +837,81 @@ class MainActivity : AppCompatActivity() {
         printView.loadUrl(urlString)
     }
 
+    private fun requiredNiimbotPermissions(): Array<String> {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            arrayOf(
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_CONNECT
+            )
+        } else {
+            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+    }
+
+    private fun requestNiimbotPrint(dataUrl: String) {
+        if (
+            !dataUrl.startsWith("data:image/png;base64,") ||
+            dataUrl.length > 3_000_000
+        ) {
+            sendNiimbotEvent(
+                "error",
+                "La etiqueta enviada por ZGT no tiene un formato válido."
+            )
+            return
+        }
+
+        val missing = requiredNiimbotPermissions().filter { permission ->
+            ContextCompat.checkSelfPermission(
+                this,
+                permission
+            ) != PackageManager.PERMISSION_GRANTED
+        }
+
+        if (missing.isEmpty()) {
+            niimbotPrinter.print(dataUrl)
+            return
+        }
+
+        pendingNiimbotDataUrl = dataUrl
+        bluetoothPermissionLauncher.launch(missing.toTypedArray())
+    }
+
+    private fun sendNiimbotEvent(type: String, message: String) {
+        val payload = JSONObject()
+            .put("type", type)
+            .put("message", message)
+            .toString()
+
+        runOnUiThread {
+            webView?.evaluateJavascript(
+                "window.ZEOZZGTPrintNativeCallback && " +
+                    "window.ZEOZZGTPrintNativeCallback(" +
+                    JSONObject.quote(payload) +
+                    ");",
+                null
+            )
+        }
+    }
+
     private inner class ZGTNativeBridge {
         @JavascriptInterface
-        fun appVersion(): String = "0.1.9"
+        fun appVersion(): String = "0.2.0"
+
+        @JavascriptInterface
+        fun printNiimbotB1Pro(dataUrl: String) {
+            runOnUiThread {
+                requestNiimbotPrint(dataUrl)
+            }
+        }
+
+        @JavascriptInterface
+        fun disconnectNiimbotB1Pro() {
+            niimbotPrinter.disconnect()
+        }
+
+        @JavascriptInterface
+        fun isNiimbotB1ProConnected(): Boolean =
+            niimbotPrinter.isConnected()
 
         @JavascriptInterface
         fun openPdf(url: String, filename: String) {
@@ -956,6 +1063,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         closeNativePdfViewer()
+        niimbotPrinter.disconnect()
         nativePrintWebView?.destroy()
         webView?.destroy()
         super.onDestroy()
