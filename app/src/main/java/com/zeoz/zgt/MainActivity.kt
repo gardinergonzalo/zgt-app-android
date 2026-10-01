@@ -364,7 +364,7 @@ class MainActivity : AppCompatActivity() {
             databaseEnabled = true
             allowFileAccess = true
             mediaPlaybackRequiresUserGesture = false
-            userAgentString = "$userAgentString ZGT-Android/0.2.0"
+            userAgentString = "$userAgentString ZGT-Android/0.2.1"
         }
 
         w.addJavascriptInterface(ZGTNativeBridge(), "ZGTNative")
@@ -429,7 +429,25 @@ class MainActivity : AppCompatActivity() {
         }
 
         root.addView(w, FrameLayout.LayoutParams(-1, -1))
-        w.loadUrl("${siteUrl.trimEnd('/')}/wp-admin/")
+
+        val baseUrl = siteUrl.trimEnd('/')
+        val adminUrl = "$baseUrl/wp-admin/"
+        val entryUrl = if (hasWordPressSession(baseUrl)) {
+            adminUrl
+        } else {
+            "$baseUrl/wp-login.php?redirect_to=${Uri.encode(adminUrl)}"
+        }
+        w.loadUrl(entryUrl)
+    }
+
+    private fun hasWordPressSession(siteUrl: String): Boolean {
+        val cookieManager = CookieManager.getInstance()
+        val adminCookies = cookieManager.getCookie("${siteUrl.trimEnd('/')}/wp-admin/").orEmpty()
+        val rootCookies = cookieManager.getCookie(siteUrl.trimEnd('/')).orEmpty()
+        val cookies = "$adminCookies; $rootCookies"
+
+        return cookies.contains("wordpress_logged_in_", ignoreCase = true) ||
+            cookies.contains("wordpress_sec_", ignoreCase = true)
     }
 
 
@@ -895,7 +913,7 @@ class MainActivity : AppCompatActivity() {
 
     private inner class ZGTNativeBridge {
         @JavascriptInterface
-        fun appVersion(): String = "0.2.0"
+        fun appVersion(): String = "0.2.1"
 
         @JavascriptInterface
         fun printNiimbotB1Pro(dataUrl: String) {
