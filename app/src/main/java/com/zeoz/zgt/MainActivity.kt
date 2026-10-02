@@ -106,7 +106,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-    private val centralEndpoint = "https://zgt.zeoz.com.ar/wp-json/gtc/v1/app/resolve"
+    private val centralEndpoint = "https://central.zeoz.com.ar/wp-json/gtc/v1/app/resolve"
 
     private val zgtBackground = Color.rgb(20, 20, 20)
     private val zgtSurface = Color.rgb(30, 30, 30)
