@@ -24,6 +24,7 @@ import android.text.InputFilter
 import android.text.InputType
 import android.text.TextWatcher
 import android.text.Editable
+import android.util.Base64
 import android.view.Gravity
 import android.view.inputmethod.InputMethodManager
 import android.webkit.CookieManager
@@ -364,7 +365,7 @@ class MainActivity : AppCompatActivity() {
             databaseEnabled = true
             allowFileAccess = true
             mediaPlaybackRequiresUserGesture = false
-            userAgentString = "$userAgentString ZGT-Android/0.2.0"
+            userAgentString = "$userAgentString ZGT-Android/${packageManager.getPackageInfo(packageName, 0).versionName}"
         }
 
         w.addJavascriptInterface(ZGTNativeBridge(), "ZGTNative")
@@ -522,6 +523,82 @@ class MainActivity : AppCompatActivity() {
                 done(Result.failure(error))
             } finally {
                 connection?.disconnect()
+            }
+        }
+    }
+
+    private fun pdfFileFromDataUrl(
+        dataUrl: String,
+        filename: String
+    ): Result<File> {
+        return try {
+            val prefix = "data:application/pdf;base64,"
+            if (!dataUrl.startsWith(prefix, ignoreCase = true)) {
+                throw Exception("Formato PDF inválido.")
+            }
+
+            if (dataUrl.length > 20_000_000) {
+                throw Exception("El PDF es demasiado grande.")
+            }
+
+            val encoded = dataUrl.substring(prefix.length)
+            var bytes = Base64.decode(encoded, Base64.DEFAULT)
+
+            val maxSearch = minOf(bytes.size - 3, 1024)
+            var pdfStart = -1
+            for (index in 0 until maxSearch) {
+                if (
+                    bytes[index] == '%'.code.toByte() &&
+                    bytes[index + 1] == 'P'.code.toByte() &&
+                    bytes[index + 2] == 'D'.code.toByte() &&
+                    bytes[index + 3] == 'F'.code.toByte()
+                ) {
+                    pdfStart = index
+                    break
+                }
+            }
+
+            if (pdfStart < 0) {
+                throw Exception("Los datos recibidos no contienen un PDF válido.")
+            }
+
+            if (pdfStart > 0) {
+                bytes = bytes.copyOfRange(pdfStart, bytes.size)
+            }
+
+            val file = File(
+                File(cacheDir, "shared").apply { mkdirs() },
+                safePdfFilename(filename)
+            )
+
+            FileOutputStream(file).use { output ->
+                output.write(bytes)
+            }
+
+            Result.success(file)
+        } catch (error: Exception) {
+            Result.failure(error)
+        }
+    }
+
+    private fun handlePdfData(
+        dataUrl: String,
+        filename: String,
+        errorMessage: String,
+        action: (File) -> Unit
+    ) {
+        thread {
+            val result = pdfFileFromDataUrl(dataUrl, filename)
+
+            runOnUiThread {
+                result.onSuccess(action)
+                    .onFailure { error ->
+                        Toast.makeText(
+                            this,
+                            (errorMessage + " " + error.message.orEmpty()).trim(),
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
             }
         }
     }
@@ -895,7 +972,7 @@ class MainActivity : AppCompatActivity() {
 
     private inner class ZGTNativeBridge {
         @JavascriptInterface
-        fun appVersion(): String = "0.2.0"
+        fun appVersion(): String = packageManager.getPackageInfo(packageName, 0).versionName ?: "0.2.2"
 
         @JavascriptInterface
         fun printNiimbotB1Pro(dataUrl: String) {
@@ -912,6 +989,39 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun isNiimbotB1ProConnected(): Boolean =
             niimbotPrinter.isConnected()
+
+        @JavascriptInterface
+        fun openPdfData(dataUrl: String, filename: String) {
+            handlePdfData(
+                dataUrl,
+                filename,
+                "No se pudo abrir el PDF."
+            ) { file ->
+                openPdfFile(file)
+            }
+        }
+
+        @JavascriptInterface
+        fun sharePdfData(dataUrl: String, filename: String) {
+            handlePdfData(
+                dataUrl,
+                filename,
+                "No se pudo compartir el PDF."
+            ) { file ->
+                sharePdfFile(file)
+            }
+        }
+
+        @JavascriptInterface
+        fun printPdfData(dataUrl: String, filename: String) {
+            handlePdfData(
+                dataUrl,
+                filename,
+                "No se pudo preparar el PDF para imprimir."
+            ) { file ->
+                printPdfFile(file)
+            }
+        }
 
         @JavascriptInterface
         fun openPdf(url: String, filename: String) {
