@@ -12,6 +12,7 @@ import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
+import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -24,6 +25,8 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.Executors
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Native BLE transport for the NIIMBOT B1 Pro used by ZGT.
@@ -190,6 +193,10 @@ class NiimbotB1ProPrinter(
         }
 
         connectedModelId = modelId
+        activity.getSharedPreferences("zgt", Context.MODE_PRIVATE)
+            .edit()
+            .putString("niimbot_last_address", device.address)
+            .apply()
     }
 
     @SuppressLint("MissingPermission")
@@ -197,28 +204,56 @@ class NiimbotB1ProPrinter(
         val scanner = bluetooth.bluetoothLeScanner
             ?: throw Exception("Android no pudo iniciar el escaneo Bluetooth.")
 
-        val found = linkedMapOf<String, BluetoothDevice>()
+        val lastAddress = activity
+            .getSharedPreferences("zgt", Context.MODE_PRIVATE)
+            .getString("niimbot_last_address", null)
+
+        // Keep RSSI so the nearest printer is first when more than one B1 is
+        // visible. ConcurrentHashMap also avoids races between the BLE callback
+        // thread and the print worker thread.
+        val found = ConcurrentHashMap<String, Pair<BluetoothDevice, Int>>()
+        val scanFailure = AtomicInteger(0)
+
         val callback = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
+                val device = result.device
                 val name = try {
-                    result.device.name ?: result.scanRecord?.deviceName
+                    device.name ?: result.scanRecord?.deviceName
                 } catch (_: SecurityException) {
                     result.scanRecord?.deviceName
                 }
 
-                if (!name.isNullOrBlank() && name.startsWith("B1", ignoreCase = true)) {
-                    found[result.device.address] = result.device
+                val advertisesNiimbot = result.scanRecord
+                    ?.serviceUuids
+                    ?.any { parcel -> parcel.uuid == SERVICE_UUID } == true
+
+                val looksLikeB1 =
+                    name?.contains("B1", ignoreCase = true) == true ||
+                    name?.contains("NIIMBOT", ignoreCase = true) == true ||
+                    advertisesNiimbot ||
+                    (lastAddress != null && device.address.equals(lastAddress, ignoreCase = true))
+
+                if (looksLikeB1) {
+                    found[device.address] = device to result.rssi
                 }
             }
 
             override fun onBatchScanResults(results: MutableList<ScanResult>) {
                 results.forEach { onScanResult(0, it) }
             }
+
+            override fun onScanFailed(errorCode: Int) {
+                scanFailure.compareAndSet(0, errorCode)
+            }
         }
 
+        val settings = ScanSettings.Builder()
+            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .build()
+
         try {
-            scanner.startScan(callback)
-            Thread.sleep(3500)
+            scanner.startScan(null, settings, callback)
+            Thread.sleep(7000)
         } finally {
             try {
                 scanner.stopScan(callback)
@@ -226,11 +261,22 @@ class NiimbotB1ProPrinter(
             }
         }
 
-        val devices = found.values.toList()
+        val failureCode = scanFailure.get()
+        val devices = found.values
+            .sortedByDescending { it.second }
+            .map { it.first }
+
         if (devices.isEmpty()) {
+            if (failureCode != 0) {
+                throw Exception(
+                    "Android no pudo completar el escaneo Bluetooth (código $failureCode). " +
+                        "Apagá y encendé Bluetooth y volvé a intentar."
+                )
+            }
+
             throw Exception(
                 "No se encontró ninguna NIIMBOT B1 Pro. " +
-                    "Verificá que esté encendida y cerca del teléfono."
+                    "Verificá que esté encendida, cerca y que no siga conectada a otro teléfono."
             )
         }
 
