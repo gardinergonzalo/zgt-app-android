@@ -12,6 +12,7 @@ import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
+import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -24,6 +25,8 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.Executors
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Native BLE transport for the NIIMBOT B1 Pro used by ZGT.
@@ -190,53 +193,78 @@ class NiimbotB1ProPrinter(
         }
 
         connectedModelId = modelId
-    }
+        activity.getSharedPreferences("zgt", Context.MODE_PRIVATE)\n            .edit()\n            .putString("niimbot_last_address", device.address)\n            .apply()\n    }
 
     @SuppressLint("MissingPermission")
     private fun scanAndChoose(bluetooth: BluetoothAdapter): BluetoothDevice {
         val scanner = bluetooth.bluetoothLeScanner
             ?: throw Exception("Android no pudo iniciar el escaneo Bluetooth.")
 
-        val found = linkedMapOf<String, BluetoothDevice>()
+        val lastAddress = activity.getSharedPreferences("zgt", Context.MODE_PRIVATE)
+            .getString("niimbot_last_address", null)
+
+        val found = ConcurrentHashMap<String, Pair<BluetoothDevice, Int>>()
+        val scanFailure = AtomicInteger(0)
+
         val callback = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
+                val device = result.device
                 val name = try {
-                    result.device.name ?: result.scanRecord?.deviceName
+                    device.name ?: result.scanRecord?.deviceName
                 } catch (_: SecurityException) {
                     result.scanRecord?.deviceName
                 }
 
-                if (!name.isNullOrBlank() && name.startsWith("B1", ignoreCase = true)) {
-                    found[result.device.address] = result.device
+                val advertisesNiimbot = result.scanRecord?.serviceUuids
+                    ?.any { it.uuid == SERVICE_UUID } == true
+
+                val likelyB1 =
+                    name?.contains("B1", ignoreCase = true) == true ||
+                    name?.contains("NIIMBOT", ignoreCase = true) == true ||
+                    advertisesNiimbot ||
+                    (lastAddress != null && device.address.equals(lastAddress, ignoreCase = true))
+
+                if (likelyB1) {
+                    found[device.address] = device to result.rssi
                 }
             }
 
             override fun onBatchScanResults(results: MutableList<ScanResult>) {
                 results.forEach { onScanResult(0, it) }
             }
-        }
 
-        try {
-            scanner.startScan(callback)
-            Thread.sleep(3500)
-        } finally {
-            try {
-                scanner.stopScan(callback)
-            } catch (_: Exception) {
+            override fun onScanFailed(errorCode: Int) {
+                scanFailure.compareAndSet(0, errorCode)
             }
         }
 
-        val devices = found.values.toList()
+        val settings = ScanSettings.Builder()
+            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .build()
+
+        try {
+            scanner.startScan(null, settings, callback)
+            Thread.sleep(10000)
+        } finally {
+            try { scanner.stopScan(callback) } catch (_: Exception) {}
+        }
+
+        val devices = found.values
+            .sortedByDescending { it.second }
+            .map { it.first }
+
         if (devices.isEmpty()) {
+            val code = scanFailure.get()
+            if (code != 0) {
+                throw Exception("Android no pudo completar el escaneo Bluetooth (código $code).")
+            }
             throw Exception(
                 "No se encontró ninguna NIIMBOT B1 Pro. " +
                     "Verificá que esté encendida y cerca del teléfono."
             )
         }
 
-        if (devices.size == 1) {
-            return devices.first()
-        }
+        if (devices.size == 1) return devices.first()
 
         val choice = ArrayBlockingQueue<Int>(1)
         activity.runOnUiThread {
