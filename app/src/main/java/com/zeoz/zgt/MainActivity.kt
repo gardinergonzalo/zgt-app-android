@@ -41,6 +41,8 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.FileProvider
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
@@ -122,6 +124,18 @@ class MainActivity : AppCompatActivity() {
         window.navigationBarColor = zgtBackground
         root = FrameLayout(this)
         setContentView(root)
+
+        // Android 15 / targetSdk 35 uses edge-to-edge by default. Keep the
+        // workshop WebView and bottom-sheet actions above the system
+        // navigation bar so buttons are never hidden behind Samsung/Android
+        // navigation controls.
+        ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
+            val navigation = insets.getInsets(WindowInsetsCompat.Type.navigationBars())
+            view.setPadding(0, 0, 0, navigation.bottom)
+            insets
+        }
+        ViewCompat.requestApplyInsets(root)
+
         showSplash()
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
