@@ -193,7 +193,11 @@ class NiimbotB1ProPrinter(
         }
 
         connectedModelId = modelId
-        activity.getSharedPreferences("zgt", Context.MODE_PRIVATE)\n            .edit()\n            .putString("niimbot_last_address", device.address)\n            .apply()\n    }
+        activity.getSharedPreferences("zgt", Context.MODE_PRIVATE)
+            .edit()
+            .putString("niimbot_last_address", device.address)
+            .apply()
+    }
 
     @SuppressLint("MissingPermission")
     private fun scanAndChoose(bluetooth: BluetoothAdapter): BluetoothDevice {
