@@ -41,6 +41,8 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.FileProvider
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
@@ -106,7 +108,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-    private val centralEndpoint = "https://zgt.zeoz.com.ar/wp-json/gtc/v1/app/resolve"
+    private val centralEndpoint = "https://central.zeoz.com.ar/wp-json/gtc/v1/app/resolve"
 
     private val zgtBackground = Color.rgb(20, 20, 20)
     private val zgtSurface = Color.rgb(30, 30, 30)
@@ -122,6 +124,14 @@ class MainActivity : AppCompatActivity() {
         window.navigationBarColor = zgtBackground
         root = FrameLayout(this)
         setContentView(root)
+
+        ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
+            val navigation = insets.getInsets(WindowInsetsCompat.Type.navigationBars())
+            view.setPadding(0, 0, 0, navigation.bottom)
+            insets
+        }
+        ViewCompat.requestApplyInsets(root)
+
         showSplash()
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
