@@ -249,6 +249,11 @@ class NiimbotB1ProPrinter(
         try {
             scanner.startScan(null, settings, callback)
             Thread.sleep(10000)
+        } catch (error: SecurityException) {
+            throw Exception(
+                "Android bloqueó el escaneo Bluetooth por permisos del sistema. " +
+                    "Detalle: " + (error.message ?: "sin detalle")
+            )
         } finally {
             try { scanner.stopScan(callback) } catch (_: Exception) {}
         }
