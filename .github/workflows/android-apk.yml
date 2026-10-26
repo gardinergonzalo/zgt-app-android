@@ -1,7 +1,7 @@
 name: Build ZGT Android APK
 on:
   push:
-    branches: [ main ]
+    branches: [ main, fix/android-v0.2.4-insets-ble-scan ]
   workflow_dispatch:
 
 jobs:
