@@ -1,7 +1,7 @@
 name: Build ZGT Android APK
 on:
   push:
-    branches: [ fix/android-v0.2.4-stable-from-022 ]
+    branches: [ fix/vcard-contacts-from-android-0.2.5 ]
   workflow_dispatch:
 
 jobs:
@@ -24,6 +24,6 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: ZGT-Android-v0.2.4-clean-debug
+          name: ZGT-Android-v0.2.6-debug
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
