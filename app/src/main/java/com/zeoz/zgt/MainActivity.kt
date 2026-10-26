@@ -13,6 +13,7 @@ import android.print.PrintAttributes
 import android.print.PrintDocumentAdapter
 import android.print.PrintDocumentInfo
 import android.print.PrintManager
+import android.provider.ContactsContract
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.pdf.PdfRenderer
@@ -59,6 +60,7 @@ class MainActivity : AppCompatActivity() {
     private var nativePdfOverlay: LinearLayout? = null
     private var pendingCameraPermissionRequest: PermissionRequest? = null
     private var pendingNiimbotDataUrl: String? = null
+    private var contactImportInProgress = false
 
     private val niimbotPrinter by lazy {
         NiimbotB1ProPrinter(this) { type, message ->
@@ -419,11 +421,18 @@ class MainActivity : AppCompatActivity() {
         val allowedHost = URL(siteUrl).host
         w.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                val url = request.url.toString()
+
+                if (isContactExportUrl(url)) {
+                    importContactFromUrl(url)
+                    return true
+                }
+
                 val host = request.url.host ?: return false
                 return if (host == allowedHost || host.endsWith(".$allowedHost")) {
                     false
                 } else {
-                    startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, request.url))
+                    startActivity(Intent(Intent.ACTION_VIEW, request.url))
                     true
                 }
             }
@@ -443,6 +452,366 @@ class MainActivity : AppCompatActivity() {
         w.loadUrl("${siteUrl.trimEnd('/')}/wp-admin/")
     }
 
+
+    private data class VCardContact(
+        val name: String,
+        val phones: List<Pair<String, Int>>,
+        val emails: List<Pair<String, Int>>,
+        val address: String?,
+        val addressType: Int,
+        val company: String?
+    )
+
+    private fun isContactExportUrl(value: String): Boolean {
+        if (!isTrustedWorkshopUrl(value)) return false
+
+        return try {
+            val uri = Uri.parse(value)
+            val action = uri.getQueryParameter("action")
+                ?.trim()
+                ?.lowercase()
+                .orEmpty()
+
+            uri.path.orEmpty().endsWith("/wp-admin/admin-post.php") &&
+                action.startsWith("gtm_contacto_")
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun importContactFromUrl(urlString: String) {
+        if (contactImportInProgress) return
+
+        if (!isContactExportUrl(urlString)) {
+            showContactError("La dirección del contacto no es válida.")
+            return
+        }
+
+        contactImportInProgress = true
+
+        val cookie = CookieManager.getInstance().getCookie(urlString).orEmpty()
+        val userAgent = webView?.settings?.userAgentString.orEmpty()
+        val referer = webView?.url.orEmpty()
+
+        thread {
+            var connection: HttpURLConnection? = null
+
+            try {
+                connection = (URL(urlString).openConnection() as HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    connectTimeout = 15000
+                    readTimeout = 20000
+                    instanceFollowRedirects = true
+                    setRequestProperty(
+                        "Accept",
+                        "text/vcard, text/x-vcard, text/directory, */*;q=0.8"
+                    )
+                    if (cookie.isNotBlank()) {
+                        setRequestProperty("Cookie", cookie)
+                    }
+                    if (userAgent.isNotBlank()) {
+                        setRequestProperty("User-Agent", userAgent)
+                    }
+                    if (referer.isNotBlank()) {
+                        setRequestProperty("Referer", referer)
+                    }
+                }
+
+                val status = connection.responseCode
+                if (status !in 200..299) {
+                    throw Exception("El servidor respondió HTTP $status.")
+                }
+
+                val bytes = connection.inputStream.use { it.readBytes() }
+                if (bytes.isEmpty() || bytes.size > 1_000_000) {
+                    throw Exception("La ficha de contacto está vacía o es demasiado grande.")
+                }
+
+                val text = bytes
+                    .toString(Charsets.UTF_8)
+                    .removePrefix("\uFEFF")
+
+                if (!text.trimStart().startsWith("BEGIN:VCARD", ignoreCase = true)) {
+                    throw Exception(
+                        "ZGT no recibió una vCard válida. Verificá que la sesión siga iniciada."
+                    )
+                }
+
+                val contact = parseVCard(text)
+
+                runOnUiThread {
+                    contactImportInProgress = false
+                    openNativeContactEditor(contact)
+                }
+            } catch (error: Exception) {
+                runOnUiThread {
+                    contactImportInProgress = false
+                    showContactError(
+                        error.message ?: "No se pudo obtener el contacto desde ZGT."
+                    )
+                }
+            } finally {
+                connection?.disconnect()
+            }
+        }
+    }
+
+    private fun parseVCard(text: String): VCardContact {
+        val lines = mutableListOf<String>()
+
+        text
+            .replace("\r\n", "\n")
+            .replace("\r", "\n")
+            .split("\n")
+            .forEach { raw ->
+                if (
+                    (raw.startsWith(" ") || raw.startsWith("\t")) &&
+                    lines.isNotEmpty()
+                ) {
+                    lines[lines.lastIndex] += raw.drop(1)
+                } else {
+                    lines += raw
+                }
+            }
+
+        var name = ""
+        var fallbackName = ""
+        var company: String? = null
+        var address: String? = null
+        var addressType = ContactsContract.CommonDataKinds.StructuredPostal.TYPE_HOME
+        val phones = mutableListOf<Pair<String, Int>>()
+        val emails = mutableListOf<Pair<String, Int>>()
+
+        lines.forEach { line ->
+            val colon = line.indexOf(':')
+            if (colon <= 0) return@forEach
+
+            val left = line.substring(0, colon)
+            val rawValue = line.substring(colon + 1)
+
+            val segments = left.split(';')
+            val property = segments
+                .firstOrNull()
+                .orEmpty()
+                .substringAfterLast('.')
+                .uppercase()
+
+            val parameters = segments
+                .drop(1)
+                .joinToString(";")
+                .uppercase()
+
+            when (property) {
+                "FN" -> name = unescapeVCard(rawValue).trim()
+
+                "N" -> {
+                    if (fallbackName.isBlank()) {
+                        val parts = splitVCardValue(rawValue, ';')
+                            .map(::unescapeVCard)
+                        fallbackName = listOfNotNull(
+                            parts.getOrNull(1)?.takeIf { it.isNotBlank() },
+                            parts.getOrNull(2)?.takeIf { it.isNotBlank() },
+                            parts.getOrNull(0)?.takeIf { it.isNotBlank() },
+                            parts.getOrNull(3)?.takeIf { it.isNotBlank() },
+                            parts.getOrNull(4)?.takeIf { it.isNotBlank() }
+                        ).joinToString(" ").trim()
+                    }
+                }
+
+                "TEL" -> {
+                    val value = unescapeVCard(rawValue)
+                        .removePrefix("tel:")
+                        .trim()
+
+                    if (value.isNotBlank()) {
+                        val type = when {
+                            "CELL" in parameters ->
+                                ContactsContract.CommonDataKinds.Phone.TYPE_MOBILE
+                            "WORK" in parameters ->
+                                ContactsContract.CommonDataKinds.Phone.TYPE_WORK
+                            "HOME" in parameters ->
+                                ContactsContract.CommonDataKinds.Phone.TYPE_HOME
+                            else ->
+                                ContactsContract.CommonDataKinds.Phone.TYPE_OTHER
+                        }
+                        phones += value to type
+                    }
+                }
+
+                "EMAIL" -> {
+                    val value = unescapeVCard(rawValue).trim()
+                    if (value.isNotBlank()) {
+                        val type = when {
+                            "WORK" in parameters ->
+                                ContactsContract.CommonDataKinds.Email.TYPE_WORK
+                            "HOME" in parameters ->
+                                ContactsContract.CommonDataKinds.Email.TYPE_HOME
+                            else ->
+                                ContactsContract.CommonDataKinds.Email.TYPE_OTHER
+                        }
+                        emails += value to type
+                    }
+                }
+
+                "ADR" -> {
+                    val parts = splitVCardValue(rawValue, ';')
+                        .map(::unescapeVCard)
+                        .filter { it.isNotBlank() }
+
+                    if (parts.isNotEmpty()) {
+                        address = parts.joinToString(", ").trim()
+                        addressType = when {
+                            "WORK" in parameters ->
+                                ContactsContract.CommonDataKinds.StructuredPostal.TYPE_WORK
+                            "HOME" in parameters ->
+                                ContactsContract.CommonDataKinds.StructuredPostal.TYPE_HOME
+                            else ->
+                                ContactsContract.CommonDataKinds.StructuredPostal.TYPE_OTHER
+                        }
+                    }
+                }
+
+                "ORG" -> {
+                    company = splitVCardValue(rawValue, ';')
+                        .map(::unescapeVCard)
+                        .filter { it.isNotBlank() }
+                        .joinToString(" ")
+                        .trim()
+                        .ifBlank { null }
+                }
+            }
+        }
+
+        val finalName = name.ifBlank { fallbackName }.trim()
+        if (finalName.isBlank()) {
+            throw Exception("La ficha de contacto no contiene un nombre.")
+        }
+
+        return VCardContact(
+            name = finalName,
+            phones = phones.distinctBy { it.first },
+            emails = emails.distinctBy { it.first.lowercase() },
+            address = address?.takeIf { it.isNotBlank() },
+            addressType = addressType,
+            company = company
+        )
+    }
+
+    private fun splitVCardValue(value: String, delimiter: Char): List<String> {
+        val result = mutableListOf<String>()
+        val current = StringBuilder()
+        var escaped = false
+
+        value.forEach { ch ->
+            when {
+                escaped -> {
+                    current.append('\\')
+                    current.append(ch)
+                    escaped = false
+                }
+                ch == '\\' -> escaped = true
+                ch == delimiter -> {
+                    result += current.toString()
+                    current.setLength(0)
+                }
+                else -> current.append(ch)
+            }
+        }
+
+        if (escaped) current.append('\\')
+        result += current.toString()
+        return result
+    }
+
+    private fun unescapeVCard(value: String): String {
+        val result = StringBuilder()
+        var index = 0
+
+        while (index < value.length) {
+            val ch = value[index]
+
+            if (ch == '\\' && index + 1 < value.length) {
+                val next = value[index + 1]
+                when (next) {
+                    'n', 'N' -> result.append('\n')
+                    '\\' -> result.append('\\')
+                    ';' -> result.append(';')
+                    ',' -> result.append(',')
+                    else -> result.append(next)
+                }
+                index += 2
+                continue
+            }
+
+            result.append(ch)
+            index++
+        }
+
+        return result.toString()
+    }
+
+    private fun openNativeContactEditor(contact: VCardContact) {
+        val intent = Intent(Intent.ACTION_INSERT).apply {
+            type = ContactsContract.Contacts.CONTENT_TYPE
+            putExtra(ContactsContract.Intents.Insert.NAME, contact.name)
+
+            contact.company?.let {
+                putExtra(ContactsContract.Intents.Insert.COMPANY, it)
+            }
+
+            contact.phones.getOrNull(0)?.let { (value, type) ->
+                putExtra(ContactsContract.Intents.Insert.PHONE, value)
+                putExtra(ContactsContract.Intents.Insert.PHONE_TYPE, type)
+            }
+            contact.phones.getOrNull(1)?.let { (value, type) ->
+                putExtra(ContactsContract.Intents.Insert.SECONDARY_PHONE, value)
+                putExtra(ContactsContract.Intents.Insert.SECONDARY_PHONE_TYPE, type)
+            }
+            contact.phones.getOrNull(2)?.let { (value, type) ->
+                putExtra(ContactsContract.Intents.Insert.TERTIARY_PHONE, value)
+                putExtra(ContactsContract.Intents.Insert.TERTIARY_PHONE_TYPE, type)
+            }
+
+            contact.emails.getOrNull(0)?.let { (value, type) ->
+                putExtra(ContactsContract.Intents.Insert.EMAIL, value)
+                putExtra(ContactsContract.Intents.Insert.EMAIL_TYPE, type)
+            }
+            contact.emails.getOrNull(1)?.let { (value, type) ->
+                putExtra(ContactsContract.Intents.Insert.SECONDARY_EMAIL, value)
+                putExtra(ContactsContract.Intents.Insert.SECONDARY_EMAIL_TYPE, type)
+            }
+            contact.emails.getOrNull(2)?.let { (value, type) ->
+                putExtra(ContactsContract.Intents.Insert.TERTIARY_EMAIL, value)
+                putExtra(ContactsContract.Intents.Insert.TERTIARY_EMAIL_TYPE, type)
+            }
+
+            contact.address?.let {
+                putExtra(ContactsContract.Intents.Insert.POSTAL, it)
+                putExtra(ContactsContract.Intents.Insert.POSTAL_TYPE, contact.addressType)
+            }
+        }
+
+        if (intent.resolveActivity(packageManager) == null) {
+            showContactError(
+                "No hay una aplicación de contactos disponible en este dispositivo."
+            )
+            return
+        }
+
+        try {
+            startActivity(intent)
+        } catch (_: Exception) {
+            showContactError("No se pudo abrir el editor de contactos.")
+        }
+    }
+
+    private fun showContactError(message: String) {
+        AlertDialog.Builder(this)
+            .setTitle("Agregar a contactos")
+            .setMessage(message)
+            .setPositiveButton("Aceptar", null)
+            .show()
+    }
 
     private fun isTrustedWorkshopUrl(value: String): Boolean {
         val siteUrl = prefs.getString("site_url", null) ?: return false
