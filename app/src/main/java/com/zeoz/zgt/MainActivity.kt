@@ -42,8 +42,10 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.FileProvider
 import androidx.core.content.ContextCompat
+import androidx.core.graphics.ColorUtils
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
@@ -120,9 +122,34 @@ class MainActivity : AppCompatActivity() {
     private val zgtLime = Color.rgb(234, 255, 0)
     private val zgtError = Color.rgb(252, 165, 165)
 
+    private val appearanceBridgeScript = """
+        (function () {
+            window.webkit = window.webkit || {};
+            window.webkit.messageHandlers = window.webkit.messageHandlers || {};
+            window.webkit.messageHandlers.zgtAppearance = {
+                postMessage: function (payload) {
+                    try {
+                        window.ZGTNative.setAppearance(
+                            JSON.stringify(payload || {})
+                        );
+                    } catch (e) {}
+                }
+            };
+            window.dispatchEvent(
+                new CustomEvent('zgtAppearanceRequest')
+            );
+        })();
+    """.trimIndent()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.statusBarColor = zgtBackground
+
+        if (prefs.getString("site_url", null).isNullOrBlank()) {
+            applyStatusBarAppearance(zgtBackground, persist = false)
+        } else {
+            applyCachedAppearance()
+        }
+
         window.navigationBarColor = zgtBackground
         root = FrameLayout(this)
         setContentView(root)
@@ -151,7 +178,14 @@ class MainActivity : AppCompatActivity() {
 
     private fun showSplash() {
         root.removeAllViews()
-        root.setBackgroundColor(zgtBackground)
+        val splashBackground = if (
+            prefs.getString("site_url", null).isNullOrBlank()
+        ) {
+            zgtBackground
+        } else {
+            currentAppearanceColor()
+        }
+        root.setBackgroundColor(splashBackground)
 
         val logo = ImageView(this).apply {
             setImageResource(R.drawable.zeoz_logo)
@@ -457,6 +491,7 @@ class MainActivity : AppCompatActivity() {
                         null
                     )
                 }
+                view.evaluateJavascript(appearanceBridgeScript, null)
                 CookieManager.getInstance().flush()
             }
         }
@@ -465,6 +500,69 @@ class MainActivity : AppCompatActivity() {
         w.loadUrl("${siteUrl.trimEnd('/')}/wp-admin/")
     }
 
+
+    private fun currentAppearanceColor(): Int {
+        val saved = prefs.getString("appearance_background", null)
+        return parseAppearanceColor(saved) ?: zgtBackground
+    }
+
+    private fun parseAppearanceColor(value: String?): Int? {
+        val text = value
+            ?.trim()
+            ?.takeIf {
+                it.matches(
+                    Regex("^#[0-9A-Fa-f]{6}$")
+                )
+            }
+            ?: return null
+
+        return try {
+            Color.parseColor(text)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun applyCachedAppearance() {
+        applyStatusBarAppearance(
+            currentAppearanceColor(),
+            persist = false
+        )
+    }
+
+    private fun applyStatusBarAppearance(
+        color: Int,
+        persist: Boolean,
+        theme: String? = null
+    ) {
+        window.statusBarColor = color
+
+        WindowInsetsControllerCompat(
+            window,
+            window.decorView
+        ).isAppearanceLightStatusBars =
+            ColorUtils.calculateLuminance(color) > 0.56
+
+        if (persist) {
+            prefs.edit()
+                .putString(
+                    "appearance_background",
+                    String.format("#%06X", 0xFFFFFF and color)
+                )
+                .putString(
+                    "appearance_theme",
+                    theme?.trim()?.lowercase().orEmpty()
+                )
+                .apply()
+        }
+    }
+
+    private fun syncAppearanceBridge() {
+        webView?.evaluateJavascript(
+            appearanceBridgeScript,
+            null
+        )
+    }
 
     private fun openNativeUri(uri: Uri, action: String, errorMessage: String) {
         try {
@@ -1379,6 +1477,30 @@ class MainActivity : AppCompatActivity() {
         fun appVersion(): String = packageManager.getPackageInfo(packageName, 0).versionName ?: "0.2.2"
 
         @JavascriptInterface
+        fun setAppearance(payloadJson: String) {
+            try {
+                val payload = JSONObject(payloadJson)
+                val background = payload.optString(
+                    "backgroundColor",
+                    ""
+                )
+                val color = parseAppearanceColor(background)
+                    ?: return
+                val theme = payload.optString("theme", "")
+
+                runOnUiThread {
+                    applyStatusBarAppearance(
+                        color = color,
+                        persist = true,
+                        theme = theme
+                    )
+                }
+            } catch (_: Exception) {
+                // Mensajes incompletos no deben alterar la WebView.
+            }
+        }
+
+        @JavascriptInterface
         fun printNiimbotB1Pro(dataUrl: String) {
             runOnUiThread {
                 requestNiimbotPrint(dataUrl)
@@ -1567,6 +1689,15 @@ class MainActivity : AppCompatActivity() {
         cornerRadius = dp(radiusDp).toFloat()
         if (strokeColor != null && strokeDp > 0) {
             setStroke(dp(strokeDp), strokeColor)
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+
+        if (!prefs.getString("site_url", null).isNullOrBlank()) {
+            applyCachedAppearance()
+            syncAppearanceBridge()
         }
     }
 
