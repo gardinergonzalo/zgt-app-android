@@ -421,18 +421,31 @@ class MainActivity : AppCompatActivity() {
         val allowedHost = URL(siteUrl).host
         w.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-                val url = request.url.toString()
+                val uri = request.url
+                val url = uri.toString()
 
                 if (isContactExportUrl(url)) {
                     importContactFromUrl(url)
                     return true
                 }
 
-                val host = request.url.host ?: return false
+                when (uri.scheme?.lowercase()) {
+                    "tel" -> {
+                        openNativeUri(uri, Intent.ACTION_DIAL, "No se pudo abrir el marcador.")
+                        return true
+                    }
+
+                    "mailto", "sms", "smsto" -> {
+                        openNativeUri(uri, Intent.ACTION_VIEW, "No se encontró una aplicación compatible.")
+                        return true
+                    }
+                }
+
+                val host = uri.host ?: return false
                 return if (host == allowedHost || host.endsWith(".$allowedHost")) {
                     false
                 } else {
-                    startActivity(Intent(Intent.ACTION_VIEW, request.url))
+                    openNativeUri(uri, Intent.ACTION_VIEW, "No se pudo abrir el enlace.")
                     true
                 }
             }
@@ -452,6 +465,18 @@ class MainActivity : AppCompatActivity() {
         w.loadUrl("${siteUrl.trimEnd('/')}/wp-admin/")
     }
 
+
+    private fun openNativeUri(uri: Uri, action: String, errorMessage: String) {
+        try {
+            startActivity(Intent(action, uri))
+        } catch (_: Exception) {
+            Toast.makeText(
+                this,
+                errorMessage,
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
 
     private data class VCardContact(
         val name: String,
@@ -751,8 +776,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun openNativeContactEditor(contact: VCardContact) {
-        val intent = Intent(Intent.ACTION_INSERT).apply {
-            type = ContactsContract.Contacts.CONTENT_TYPE
+        val intent = Intent(
+            Intent.ACTION_INSERT,
+            ContactsContract.Contacts.CONTENT_URI
+        ).apply {
             putExtra(ContactsContract.Intents.Insert.NAME, contact.name)
 
             contact.company?.let {
@@ -787,21 +814,19 @@ class MainActivity : AppCompatActivity() {
 
             contact.address?.let {
                 putExtra(ContactsContract.Intents.Insert.POSTAL, it)
-                putExtra(ContactsContract.Intents.Insert.POSTAL_TYPE, contact.addressType)
+                putExtra(
+                    ContactsContract.Intents.Insert.POSTAL_TYPE,
+                    contact.addressType
+                )
             }
-        }
-
-        if (intent.resolveActivity(packageManager) == null) {
-            showContactError(
-                "No hay una aplicación de contactos disponible en este dispositivo."
-            )
-            return
         }
 
         try {
             startActivity(intent)
         } catch (_: Exception) {
-            showContactError("No se pudo abrir el editor de contactos.")
+            showContactError(
+                "No se pudo abrir el editor de contactos de Android."
+            )
         }
     }
 
