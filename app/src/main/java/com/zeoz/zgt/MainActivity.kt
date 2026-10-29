@@ -59,6 +59,9 @@ class MainActivity : AppCompatActivity() {
     private var pendingCameraPermissionRequest: PermissionRequest? = null
     private var pendingNiimbotDataUrl: String? = null
     private var contactImportInProgress = false
+    private var splashOverlay: android.view.View? = null
+    private var splashMinimumElapsed = false
+    private var initialPageVisible = false
 
     private val niimbotPrinter by lazy {
         NiimbotB1ProPrinter(this) { type, message ->
@@ -140,22 +143,41 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showSplash() {
+        splashMinimumElapsed = false
+        initialPageVisible = false
         root.removeAllViews()
         root.setBackgroundColor(zgtBackground)
-
-        val logo = ImageView(this).apply {
-            setImageResource(R.drawable.zeoz_logo)
-            scaleType = ImageView.ScaleType.CENTER_INSIDE
-        }
-        root.addView(logo, FrameLayout.LayoutParams(dp(184), dp(118), Gravity.CENTER))
+        val cover = buildSplashOverlay()
+        splashOverlay = cover
+        root.addView(cover, FrameLayout.LayoutParams(-1, -1))
 
         root.postDelayed({
+            splashMinimumElapsed = true
             val url = prefs.getString("site_url", null)
             if (url.isNullOrBlank()) showLinkScreen() else showWorkshop(url)
         }, 420)
     }
 
+    private fun buildSplashOverlay(): FrameLayout {
+        val overlay = FrameLayout(this).apply {
+            setBackgroundColor(Color.BLACK)
+        }
+        val logo = ImageView(this).apply {
+            setImageResource(R.drawable.zeoz_logo)
+            scaleType = ImageView.ScaleType.CENTER_INSIDE
+        }
+        overlay.addView(logo, FrameLayout.LayoutParams(dp(184), dp(118), Gravity.CENTER))
+        return overlay
+    }
+
+    private fun revealInitialPageIfReady() {
+        if (!splashMinimumElapsed || !initialPageVisible) return
+        splashOverlay?.let(root::removeView)
+        splashOverlay = null
+    }
+
     private fun showLinkScreen(message: String? = null) {
+        splashOverlay = null
         root.removeAllViews()
         root.setBackgroundColor(zgtBackground)
 
@@ -351,6 +373,8 @@ class MainActivity : AppCompatActivity() {
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun showWorkshop(siteUrl: String) {
+        initialPageVisible = false
+        val cover = splashOverlay ?: buildSplashOverlay().also { splashOverlay = it }
         root.removeAllViews()
 
         val w = WebView(this)
@@ -427,6 +451,11 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
+            override fun onPageCommitVisible(view: WebView, url: String) {
+                initialPageVisible = true
+                revealInitialPageIfReady()
+            }
+
             override fun onPageFinished(view: WebView, url: String) {
                 if (url.contains("/wp-login.php")) {
                     view.evaluateJavascript(
@@ -439,6 +468,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         root.addView(w, FrameLayout.LayoutParams(-1, -1))
+        root.addView(cover, FrameLayout.LayoutParams(-1, -1))
         w.loadUrl("${siteUrl.trimEnd('/')}/wp-admin/")
     }
 
