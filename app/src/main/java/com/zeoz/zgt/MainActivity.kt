@@ -151,11 +151,15 @@ class MainActivity : AppCompatActivity() {
         splashOverlay = cover
         root.addView(cover, FrameLayout.LayoutParams(-1, -1))
 
+        val url = prefs.getString("site_url", null)
         root.postDelayed({
             splashMinimumElapsed = true
-            val url = prefs.getString("site_url", null)
-            if (url.isNullOrBlank()) showLinkScreen() else showWorkshop(url)
+            if (url.isNullOrBlank()) showLinkScreen() else revealInitialPageIfReady()
         }, 420)
+
+        if (!url.isNullOrBlank()) {
+            showWorkshop(url)
+        }
     }
 
     private fun buildSplashOverlay(): FrameLayout {
