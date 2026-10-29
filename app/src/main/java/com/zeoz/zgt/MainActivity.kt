@@ -172,7 +172,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun revealInitialPageIfReady() {
         if (!splashMinimumElapsed || !initialPageVisible) return
-        splashOverlay?.let(root::removeView)
+        splashOverlay?.let { root.removeView(it) }
         splashOverlay = null
     }
 
